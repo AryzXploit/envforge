@@ -1,4 +1,4 @@
-# envforge 🔥
+# envforge
 
 [![npm version](https://img.shields.io/npm/v/envforge.svg?style=flat&color=blue)](https://www.npmjs.com/package/envforge)
 [![license](https://img.shields.io/npm/l/envforge.svg?style=flat&color=green)](LICENSE)
