@@ -182,10 +182,3 @@ fetch('/api', {
 ## license
 
 MIT - do whatever just dont blame me if u leak ur aws keys 💀
-
----
-
-**repo name:** `envforge`<br>
-**description:** zero-dependency config manager with validation, hot reload, auto secret masking & CLI tools. stops config bugs before they hit prod.
-
-built this because i was tired of fixing "works on my machine" bugs at 3am. hope it saves u from the same pain.
