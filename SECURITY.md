@@ -16,7 +16,7 @@ If you discover a security vulnerability in envforge, please report it responsib
 
 Please send a report to:
 
-security@aryapanel.xyz
+security@aryapanel.xyz or [Security Advisories](https://github.com/AryzXploit/envforge/security/advisories/new) 
 
 Include the following information if possible:
 
