@@ -1,0 +1,373 @@
+#!/usr/bin/env node
+
+import { readFileSync, existsSync, readdirSync } from 'fs';
+import { resolve, join } from 'path';
+
+const args = process.argv.slice(2);
+const command = args[0];
+
+const COLORS = {
+  reset: '\x1b[0m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+  cyan: '\x1b[36m',
+  gray: '\x1b[90m'
+};
+
+function log(type: 'ok' | 'warn' | 'err' | 'info', msg: string) {
+  const prefix = {
+    ok: `${COLORS.green}✔${COLORS.reset}`,
+    warn: `${COLORS.yellow}⚠${COLORS.reset}`,
+    err: `${COLORS.red}✖${COLORS.reset}`,
+    info: `${COLORS.cyan}ℹ${COLORS.reset}`
+  }[type];
+  console.log(`${prefix} ${msg}`);
+}
+
+function parseEnvFile(content: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    if (val.startsWith('"') && val.endsWith('"')) {
+      val = val.slice(1, -1);
+    } else if (val.startsWith("'") && val.endsWith("'")) {
+      val = val.slice(1, -1);
+    }
+    result[key] = val;
+  }
+  return result;
+}
+
+function loadEnvFiles(paths: string[]): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const path of paths) {
+    const resolved = resolve(path);
+    if (existsSync(resolved)) {
+      try {
+        const content = readFileSync(resolved, 'utf-8');
+        Object.assign(merged, parseEnvFile(content));
+      } catch {}
+    }
+  }
+  return merged;
+}
+
+function findSchemaFile(): string | null {
+  const candidates = [
+    'env.config.js',
+    'env.config.ts',
+    'envforge.config.js',
+    'envforge.config.ts',
+    'config/env.js',
+    'config/env.ts'
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return null;
+}
+
+function detectSecret(key: string): boolean {
+  const patterns = [/key/i, /secret/i, /password/i, /token/i, /auth/i, /private/i, /credential/i];
+  return patterns.some(p => p.test(key));
+}
+
+async function checkCommand() {
+  console.log(`${COLORS.cyan}envforge check${COLORS.reset}\n`);
+  
+  const envFiles = ['.env.local', '.env', '.env.defaults'];
+  const loadedFiles: string[] = [];
+  let envVars: Record<string, string> = {};
+  
+  for (const f of envFiles) {
+    if (existsSync(f)) {
+      loadedFiles.push(f);
+      const content = readFileSync(f, 'utf-8');
+      envVars = { ...envVars, ...parseEnvFile(content) };
+    }
+  }
+  
+  if (loadedFiles.length === 0) {
+    log('err', 'No .env files found');
+    process.exit(1);
+  }
+  
+  log('ok', `${loadedFiles.join(', ')} loaded`);
+  
+  const schemaFile = findSchemaFile();
+  let schema: Record<string, any> | null = null;
+  
+  if (schemaFile) {
+    try {
+      const mod = await import(resolve(schemaFile));
+      schema = mod.default || mod.schema || mod;
+      log('ok', `Schema loaded from ${schemaFile}`);
+    } catch {
+      log('warn', 'Schema file found but failed to load');
+    }
+  }
+  
+  const vars = Object.keys(envVars);
+  let secrets = 0;
+  let empty = 0;
+  
+  for (const [k, v] of Object.entries(envVars)) {
+    if (detectSecret(k)) secrets++;
+    if (v === '') empty++;
+  }
+  
+  log('ok', `${vars.length} variables found (${secrets} secrets, ${empty} empty)`);
+  
+  if (schema && typeof schema === 'object') {
+    const schemaKeys = Object.keys(schema);
+    const missing = schemaKeys.filter(k => !(k in envVars));
+    const extra = vars.filter(v => !schemaKeys.includes(v));
+    
+    if (missing.length > 0) {
+      for (const m of missing) {
+        const field = schema[m];
+        const hasDefault = field?.default !== undefined;
+        log(hasDefault ? 'warn' : 'err', `${m} missing${hasDefault ? ' (has default)' : ''}`);
+      }
+    } else {
+      log('ok', 'All schema variables present');
+    }
+    
+    if (extra.length > 0) {
+      log('warn', `${extra.length} extra variables: ${extra.join(', ')}`);
+    }
+  }
+  
+  if (secrets > 0) {
+    log('warn', `${secrets} secrets detected - ensure they're not committed`);
+  }
+  
+  console.log(`\n${COLORS.gray}Run 'npx envforge audit' for security scan${COLORS.reset}`);
+}
+
+async function generateCommand() {
+  console.log(`${COLORS.cyan}envforge generate${COLORS.reset}\n`);
+  
+  const schemaFile = findSchemaFile();
+  let schema: Record<string, any> | null = null;
+  
+  if (schemaFile) {
+    try {
+      const mod = await import(resolve(schemaFile));
+      schema = mod.default || mod.schema || mod;
+      log('ok', `Schema loaded from ${schemaFile}`);
+    } catch {
+      log('err', 'Failed to load schema');
+      process.exit(1);
+    }
+  } else {
+    log('err', 'No schema file found (looking for env.config.js/ts)');
+    process.exit(1);
+  }
+  
+  const lines: string[] = ['# Generated by envforge', ''];
+  
+  for (const [key, field] of Object.entries(schema!)) {
+    const f = field as any;
+    const isSecret = f?.secret || detectSecret(key);
+    const hasDefault = f?.default !== undefined;
+    
+    if (isSecret) {
+      lines.push(`# ${key} (secret)`);
+      lines.push(`${key}=`);
+    } else if (hasDefault) {
+      lines.push(`# ${key}`);
+      lines.push(`${key}=${f.default}`);
+    } else {
+      lines.push(`# ${key} (required)`);
+      lines.push(`${key}=`);
+    }
+    lines.push('');
+  }
+  
+  const output = lines.join('\n');
+  console.log(output);
+  
+  log('info', 'Save this to .env.example');
+}
+
+async function auditCommand() {
+  console.log(`${COLORS.cyan}envforge audit${COLORS.reset}\n`);
+  
+  const issues: string[] = [];
+  
+  const envFiles = ['.env', '.env.local', '.env.production'];
+  for (const f of envFiles) {
+    if (!existsSync(f)) continue;
+    
+    const content = readFileSync(f, 'utf-8');
+    const vars = parseEnvFile(content);
+    
+    for (const [k, v] of Object.entries(vars)) {
+      if (detectSecret(k) && v.length < 8) {
+        issues.push(`${f}: ${k} is too short (weak secret)`);
+      }
+      if (k.includes('PASSWORD') && v === 'password') {
+        issues.push(`${f}: ${k} uses default password`);
+      }
+      if (k.includes('KEY') && v === 'test' || v === 'dev') {
+        issues.push(`${f}: ${k} uses test/dev value in env`);
+      }
+    }
+  }
+  
+  try {
+    const gitignore = readFileSync('.gitignore', 'utf-8');
+    if (!gitignore.includes('.env')) {
+      issues.push('.env files not in .gitignore');
+    }
+  } catch {
+    issues.push('No .gitignore file found');
+  }
+  
+  const suspiciousPatterns = [
+    /password\s*=\s*["']?\w+["']?/i,
+    /api[_-]?key\s*[=:]\s*["']?[\w-]+["']?/i
+  ];
+  
+  const scanFiles = (dir: string, depth = 0) => {
+    if (depth > 2) return;
+    try {
+      const items = readdirSync(dir, { withFileTypes: true });
+      for (const item of items) {
+        if (item.isDirectory() && !item.name.startsWith('.') && item.name !== 'node_modules') {
+          scanFiles(join(dir, item.name), depth + 1);
+        } else if (item.isFile() && /\.(js|ts|json|md|yml|yaml)$/.test(item.name)) {
+          try {
+            const content = readFileSync(join(dir, item.name), 'utf-8');
+            for (const pattern of suspiciousPatterns) {
+              if (pattern.test(content)) {
+                issues.push(`${item.name}: Potential secret hardcoded`);
+                break;
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  };
+  
+  scanFiles('.');
+  
+  if (issues.length === 0) {
+    log('ok', 'No security issues found');
+  } else {
+    log('warn', `${issues.length} issues found:`);
+    for (const issue of issues) {
+      console.log(`  ${COLORS.yellow}•${COLORS.reset} ${issue}`);
+    }
+  }
+  
+  console.log(`\n${COLORS.gray}Recommendations:${COLORS.reset}`);
+  console.log('  • Use strong secrets (min 32 chars)');
+  console.log('  • Never commit .env files');
+  console.log('  • Rotate secrets regularly');
+}
+
+async function docsCommand() {
+  console.log(`${COLORS.cyan}envforge docs${COLORS.reset}\n`);
+  
+  const schemaFile = findSchemaFile();
+  let schema: Record<string, any> | null = null;
+  
+  if (schemaFile) {
+    try {
+      const mod = await import(resolve(schemaFile));
+      schema = mod.default || mod.schema || mod;
+    } catch {
+      log('err', 'Failed to load schema');
+      process.exit(1);
+    }
+  } else {
+    log('err', 'No schema file found');
+    process.exit(1);
+  }
+  
+  const lines = [
+    '# Environment Configuration',
+    '',
+    'Generated by envforge',
+    '',
+    '| Variable | Type | Default | Required | Secret |',
+    '|----------|------|---------|----------|--------|'
+  ];
+  
+  for (const [key, field] of Object.entries(schema!)) {
+    const f = field as any;
+    const type = f?.type || 'string';
+    const def = f?.default !== undefined ? String(f.default) : '-';
+    const req = f?.required === false ? 'No' : 'Yes';
+    const sec = (f?.secret || detectSecret(key)) ? 'Yes' : 'No';
+    lines.push(`| ${key} | ${type} | ${def} | ${req} | ${sec} |`);
+  }
+  
+  lines.push('');
+  lines.push('## Usage');
+  lines.push('');
+  lines.push('```typescript');
+  lines.push('import { forge } from "envforge";');
+  lines.push('import schema from "./env.config";');
+  lines.push('');
+  lines.push('const config = forge({ schema });');
+  lines.push('```');
+  lines.push('');
+  
+  const output = lines.join('\n');
+  console.log(output);
+  
+  log('info', 'Save this to CONFIGURATION.md');
+}
+
+function helpCommand() {
+  console.log(`${COLORS.cyan}envforge CLI${COLORS.reset}\n`);
+  console.log('Usage: npx envforge <command>\n');
+  console.log('Commands:');
+  console.log(`  ${COLORS.cyan}check${COLORS.reset}     Validate env files against schema`);
+  console.log(`  ${COLORS.cyan}generate${COLORS.reset}  Generate .env.example from schema`);
+  console.log(`  ${COLORS.cyan}audit${COLORS.reset}     Security scan for secrets`);
+  console.log(`  ${COLORS.cyan}docs${COLORS.reset}      Generate CONFIGURATION.md\n`);
+  console.log(`${COLORS.gray}Example:${COLORS.reset}`);
+  console.log('  npx envforge check');
+}
+
+async function main() {
+  switch (command) {
+    case 'check':
+      await checkCommand();
+      break;
+    case 'generate':
+      await generateCommand();
+      break;
+    case 'audit':
+      await auditCommand();
+      break;
+    case 'docs':
+      await docsCommand();
+      break;
+    case '--help':
+    case '-h':
+    case undefined:
+      helpCommand();
+      break;
+    default:
+      console.log(`${COLORS.red}Unknown command: ${command}${COLORS.reset}`);
+      helpCommand();
+      process.exit(1);
+  }
+}
+
+main().catch(err => {
+  console.error(`${COLORS.red}Error:${COLORS.reset}`, err.message);
+  process.exit(1);
+});
