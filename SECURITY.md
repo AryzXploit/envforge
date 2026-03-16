@@ -25,4 +25,4 @@ Include the following information if possible:
 - Proof of concept (PoC)
 - Potential impact
 
-I will review the report and respond as soon as possible. If the vulnerability is confirmed, a fix and security advisory will be released.
+We will review the report and respond as soon as possible. If the vulnerability is confirmed, a fix and security advisory will be released.
