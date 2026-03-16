@@ -10,7 +10,7 @@
 
 ever pushed to prod and realized your app crashed because `DATABASE_URL` was missing? yeah we've all been there. this lib makes sure that NEVER happens again.
 
-## why tho? 🤔
+## why tho?
 
 most env libraries be like:
 - load .env ✓
@@ -51,7 +51,7 @@ const config = forge({
 // no more finding out in production lmao
 ```
 
-## CLI go brrr ⚡
+## CLI go brrr
 
 ```bash
 # check if ur env valid
